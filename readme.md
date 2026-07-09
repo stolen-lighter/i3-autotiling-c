@@ -29,7 +29,7 @@ good documentation making this project possible.
 Run these commands:
 ```bash
 # 1. Download the binary
-wget https://raw.githubusercontent.com/stolen-lighter/i3-autotiling-c/main/bin/i3-autotiling-c
+wget https://github.com/stolen-lighter/i3-autotiling-c/releases/download/v1.0.0/i3-autotiling-c
 
 # 2. Make it executable
 chmod +x i3-autotiling-c
