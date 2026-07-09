@@ -41,7 +41,7 @@ mv i3-autotiling-c ~/.local/bin/
 
 ---
 ## Build-from-source
-####> Prerequisites
+### Prerequisites
 The makefile autodetects The architecture and has 2 basic categories:
 1. x86_64-linux-musl  (for x86_64)
 2. aarch64-linux-musl (for arm64, aarch64)
