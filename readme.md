@@ -50,7 +50,7 @@ The makefile autodetects The architecture and has 2 basic categories:
 Most probably will work on other architectures too, but i don't have the hardware to test it.
 
 **Important !!**
-To compile this project as intended, you need the **Zig** installed on your system.
+To compile this project as intended, you need the **Zig toolchain** installed on your system.
 (The makefile has a warning)
 #### Build commands
 ```bash
