@@ -29,7 +29,7 @@ good documentation making this project possible.
 Run these commands:
 ```bash
 # 1. Download the binary
-wget https://github.com/stolen-lighter/i3-autotiling-c/releases/download/v1.1.0/i3-autotiling-c
+wget https://github.com/stolen-lighter/i3-autotiling-c/releases/latest/download/i3-autotiling-c
 
 # 2. Make it executable
 chmod +x i3-autotiling-c
@@ -42,16 +42,32 @@ mv i3-autotiling-c ~/.local/bin/
 ---
 ## Build-from-source
 ### Prerequisites
-The makefile autodetects The architecture and has 2 basic categories:
+1. **i3-wm**
+2. **Zig toolchain**
+3. **The `i3/ipc.h` header file** 
+
+**How to get the `i3/ipc.h` header:**
+Depending on your distribution, you might already have this file located at `/usr/include/i3/ipc.h` if you installed i3.
+If your compiler throws an error saying the file is missing, you can easily get it using one of two methods:
+
+-   **Method A (Direct Download):** 
+    You can download the official header directly from the i3 repository and place it in the correct system folder.
+    ```bash
+    sudo mkdir -p /usr/include/i3
+    sudo wget https://raw.githubusercontent.com/i3/i3/master/include/i3/ipc.h -O /usr/include/i3/ipc.h
+    ```
+
+-  **Method B (Package Manager):** 
+    Install the i3 development package for your distribution (e.g., `i3-wm-dev` or `libi3-dev` on Debian/Ubuntu-based systems).
+    
+---
+The makefile autodetects the architecture and has 2 basic categories:
 1. x86_64-linux-musl  (for x86_64)
 2. aarch64-linux-musl (for arm64, aarch64)
 
 *If none of these is the target architecture we don't pass this flag and let the compiler handle it itself*
 Most probably will work on other architectures too, but i don't have the hardware to test it.
 
-**Important !!**
-To compile this project as intended, you need the **Zig toolchain** installed on your system.
-(The makefile has a warning)
 #### Build commands
 ```bash
 # Clone the repo
@@ -95,4 +111,4 @@ exec_always --no-startup-id i3-autotiling-c
 ## Practically Zero Ram Implementation
 
 The Practically Zero Ram Implementation claim is made due to the fact that this is a standalone static binary file.
-With Zero extra memory allocations and heavily optimized functions for more information regarding this claim check out [contributing](contributing.md).
+With Zero extra memory allocations and heavily optimized functions. For more information regarding this claim check out [contributing](contributing.md).
