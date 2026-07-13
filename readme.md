@@ -95,5 +95,4 @@ exec_always --no-startup-id i3-autotiling-c
 ## Practically Zero Ram Implementation
 
 The Practically Zero Ram Implementation claim is made due to the fact that this is a standalone static binary file.
-With Zero extra memory allocations and heavily optimized functions while the program runs it holds up `32Kb` of RAM.
-This means only 8 memory pages given by the kernel to the program.
+With Zero extra memory allocations and heavily optimized functions for more information regarding this claim check out [contributing](contributing.md).
