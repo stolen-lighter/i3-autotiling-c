@@ -4,12 +4,14 @@
  * One exception is the typedef struct, which is left there for convenience,
  * also, the extern variable.
  */
+#include <i3/ipc.h>
 #include <string.h>
 #include <stdint.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 
 
@@ -32,17 +34,6 @@
 #define EXIT_MESSAGE "\nClosed sockets. Exiting ...\n"
 #define LEN_EXIT_MESSAGE sizeof(EXIT_MESSAGE) - 1
 
-/*
- * I3 communication Definitions
- */
-#define I3_IPC_MAGIC      "i3-ipc"
-#define I3_IPC_HEADER_LEN 6
-
-#define I3_IPC_MESSAGE_TYPE_COMMAND     0
-#define I3_IPC_MESSAGE_TYPE_SUBSCRIBE   2
-
-#define I3_IPC_EVENT_MASK                  (1U << 31)
-#define I3_IPC_EVENT_WINDOW                (I3_IPC_EVENT_MASK | 3)
 #define SUBSCRIBE_WINDOW_EVENT_PAYLOAD     "[\"window\"]"
 #define SUBSCRIBE_WINDOW_EVENT_PAYLOAD_LEN 10
 
@@ -55,35 +46,19 @@
 
 
 
-
-typedef struct {
-        char magic[I3_IPC_HEADER_LEN] __attribute__((nonstring));
-        uint32_t size;
-        uint32_t type;
-} __attribute__((packed)) i3_ipc_header_t;
-
-
-
-
-/*
- * This function is made to look for the "I3SOCK" environment variable.
- * We use the exterally defined environ variable that stores a list of strings
- * in this format "<Key>=<Value>" Then we search for the Name in these Keys, if
- * found we return a Pointer to the first character of <Value>.
- * Else we return NULL
- */
-extern char **environ;
-const char *simple_getenv(const char *name)
+ssize_t exact_read(int fd, void *buf, size_t count)
 {
-        char *env_value = NULL;
-        size_t len = strlen(name);
+        size_t total_read = 0;
+        char *ptr = (char *)buf;
 
-        for (char **env = environ; *env != NULL; env++) {
-                int name_cmp = strncmp(*env, name, len);
-                if (name_cmp == 0 && (*env)[len] == '=')
-                        env_value = (*env + len + 1);
+        while (total_read < count) {
+                ssize_t n = read(fd, ptr + total_read, count - total_read);
+                if (n <= 0)
+                        return n;
+                total_read += n;
         }
-        return env_value;
+
+        return total_read;
 }
 
 /*
@@ -107,7 +82,7 @@ int simple_atoi(const char *str)
  */
 const char *get_i3_socket_path(void)
 {
-        const char *path = simple_getenv("I3SOCK");
+        char *path = getenv("I3SOCK");
         if (path)
                 return path;
 
@@ -189,17 +164,17 @@ out:
  */
 int window_events_subscribe(int i3_fd_event)
 {
-        i3_ipc_header_t reply_header = {0};
-        i3_ipc_header_t header = {
+        struct i3_ipc_header reply_header = {0};
+        struct i3_ipc_header header = {
                 .magic = I3_IPC_MAGIC,
                 .size  = SUBSCRIBE_WINDOW_EVENT_PAYLOAD_LEN,
                 .type  = I3_IPC_MESSAGE_TYPE_SUBSCRIBE
         };
 
-        write(i3_fd_event, &header, sizeof(i3_ipc_header_t));
+        write(i3_fd_event, &header, sizeof(struct i3_ipc_header));
         write(i3_fd_event, SUBSCRIBE_WINDOW_EVENT_PAYLOAD, SUBSCRIBE_WINDOW_EVENT_PAYLOAD_LEN);
 
-        if (read(i3_fd_event, &reply_header, sizeof(i3_ipc_header_t)) <= 0)
+        if (exact_read(i3_fd_event, &reply_header, sizeof(struct i3_ipc_header)) <= 0)
                 return -1;
 
         flush_reply(i3_fd_event, reply_header.size);
@@ -215,21 +190,22 @@ int window_events_subscribe(int i3_fd_event)
  */
 int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
 {
-        int result = EVENT_IGNORE;
+        int result = EVENT_ERROR;
 
         char *is_focus = NULL;
         char *is_new   = NULL;
         char *rect_ptr = NULL;
 
-        i3_ipc_header_t event_header = {0};
+        struct i3_ipc_header event_header = {0};
         char json_payload[4096] = {0};
 
-        ssize_t n = read(i3_fd_event, &event_header, sizeof(i3_ipc_header_t));
+        ssize_t n = exact_read(i3_fd_event, &event_header, sizeof(struct i3_ipc_header));
         size_t total_read = 0;
 
-        if (n != sizeof(i3_ipc_header_t))
+        if (n <= 0)
                 goto out;
 
+        result = EVENT_IGNORE;
         if (event_header.type != I3_IPC_EVENT_WINDOW) {
                 flush_reply(i3_fd_event, event_header.size);
                 goto out;
@@ -240,14 +216,9 @@ int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
                 goto out;
         }
 
-        while (total_read < event_header.size) {
-                n = read(i3_fd_event, json_payload + total_read, event_header.size - total_read);
-
-                if (n <= 0)
-                        goto out;
-
-                total_read += n;
-        }
+        n = exact_read(i3_fd_event, json_payload, event_header.size);
+        if (n <= 0)
+                goto out;
 
         json_payload[event_header.size] = '\0';
 
@@ -278,17 +249,17 @@ out:
 */
 int send_i3_split_command(int i3_cmd_fd, const char *split_x)
 {
-        i3_ipc_header_t header = {
+        struct i3_ipc_header header = {
                 .magic = I3_IPC_MAGIC,
                 .size  = strlen(split_x),
                 .type  = I3_IPC_MESSAGE_TYPE_COMMAND
         };
-        i3_ipc_header_t reply_header;
+        struct i3_ipc_header reply_header;
 
-        write(i3_cmd_fd, &header, sizeof(i3_ipc_header_t));
+        write(i3_cmd_fd, &header, sizeof(struct i3_ipc_header));
         write(i3_cmd_fd, split_x, header.size);
 
-        if (read(i3_cmd_fd, &reply_header, sizeof(i3_ipc_header_t)) <= 0)
+        if (exact_read(i3_cmd_fd, &reply_header, sizeof(struct i3_ipc_header)) <= 0)
                 return -1;
 
         flush_reply(i3_cmd_fd, reply_header.size);

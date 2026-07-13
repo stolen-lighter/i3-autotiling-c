@@ -25,7 +25,7 @@ TARGET := $(OUT_DIR)/i3-autotiling-c
 all: $(TARGET)
 
 $(TARGET): $(SRC) | $(OUT_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@
+	$(CC) -idirafter /usr/include $(CFLAGS) $(LDFLAGS) $< -o $@
 
 $(OUT_DIR):
 	mkdir -p $(OUT_DIR)
