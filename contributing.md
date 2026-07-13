@@ -2,7 +2,7 @@
 The way this autotiling script works is by checking the height and the width of the focused window and splitting
 the bigger dimension. By default i3 splits to the right and to the bottom. So thats the behavior of this script too.
 
-It is made to be running in the background, it uses a maximum of `32Kb` RAM not taking into account initialization.\
+It is made to be running in the background, it uses a maximum of `36Kb` RAM not taking into account initialization.\
 
 Suggestions to improve documentation in both readme and contibuting files are always welcome.
 
