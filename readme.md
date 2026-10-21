@@ -11,7 +11,8 @@ Inspired by [nwg-piotr](https://github.com/nwg-piotr/autotiling) and [suyjuris](
 runs in the background.*
 
 
-**Important Note**: Special thanks to both nwg-piotr and suyjuris for their work, for giving me the inspiration but for also having
+**Important Note**: This repo still does not support sway, if you are interested in that you can check out: [sicelo/i3-autotiling-c](https://github.com/sicelo/i3-autotiling-c)
+Special thanks to both nwg-piotr and suyjuris for their work, for giving me the inspiration but for also having
 good documentation making this project possible.
 
 ---
