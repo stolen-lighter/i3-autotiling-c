@@ -256,19 +256,20 @@ int json_get_val(char* val, const char *key, const char *json_payload, jsmntok_t
                 if (key_length != target_length)
                         continue;
 
-                if (strncasecmp(json_payload + tok_start, key, key_length) == 0) {
-                        int value_index = i + 1;
-                        int val_start = token_list[value_index].start;
-                        int val_end = token_list[value_index].end;
+                if (strncasecmp(json_payload + tok_start, key, key_length) != 0)
+                        continue;
 
-                        token_trim(&val_start, &val_end, json_payload);
-                        int val_length = val_end - val_start;
+                int value_index = i + 1;
+                int val_start = token_list[value_index].start;
+                int val_end = token_list[value_index].end;
 
-                        strncpy(val, json_payload + val_start, val_length);
-                        val[val_length] = '\0';
+                token_trim(&val_start, &val_end, json_payload);
+                int val_length = val_end - val_start;
 
-                        return 1;
-                }
+                strncpy(val, json_payload + val_start, val_length);
+                val[val_length] = '\0';
+
+                return 1;
         }
         return 0;
 }
@@ -331,7 +332,7 @@ int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
 
         if (!is_focus && !is_new)
                 goto out;
-
+/*
         result = EVENT_FOCUS;
         rect_ptr = strstr(json_payload, "\"rect\":{");
         if (rect_ptr != NULL) {
@@ -343,9 +344,55 @@ int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
                         *out_height = simple_atoi(height_ptr + 9);
                 }
         }
+*/
+        if (!is_focus && !is_new)
+                goto out;
+
+        result = EVENT_FOCUS;
+
+        for (int i = 1; i < tokens_read; i++) {
+                if (token_list[i].type != JSMN_STRING)
+                        continue;
+                int tok_start = token_list[i].start;
+                int tok_end = token_list[i].end;
+                int key_len = tok_end - tok_start;
+                token_trim(&tok_start, &tok_end, json_payload);
+
+                if (key_len != 4)
+                        continue;
+
+                if (strncasecmp(json_payload + tok_start, "rect", 4) != 0)
+                        continue;
+
+                if (token_list[i + 1].type != JSMN_OBJECT)
+                        continue;
+
+                int rect_end = token_list[i + 1].end;
+                int j = i + 2;
+
+                while (j < tokens_read && token_list[j].start < rect_end) {
+                        if (token_list[j].type != JSMN_STRING)
+                                continue;
+
+                        int p_start = token_list[j].start;
+                        int p_end = token_list[j].end;
+                        int p_len = p_end - p_start;
+
+                        if (p_len == 5 && strncasecmp(json_payload + p_start, "width", 5) == 0) {
+                                *out_width = simple_atoi(json_payload + token_list[j + 1].start);
+                                j++;
+                        } else if (p_len == 6 && strncasecmp(json_payload + p_start, "height", 6) == 0) {
+                                *out_height = simple_atoi(json_payload + token_list[j + 1].start);
+                                j++;
+                        }
+
+                        j++;
+                }
+                break;
+        }
 
 out:
-    return result;
+        return result;
 }
 
 
