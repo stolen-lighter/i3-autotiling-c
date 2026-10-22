@@ -10,6 +10,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include "jsmn.h"
 
 
 
@@ -51,6 +52,18 @@
 #define EVENT_FOCUS   1
 #define EVENT_ERROR   -1
 
+/*
+ * i3 Json Values that we need
+ */
+#define JSON_WINDOW_CHANGE_KEY     "change"
+#define JSON_WINDOW_CHANGE_VALUE_1 "focus"
+#define JSON_WINDOW_CHANGE_VALUE_2 "new"
+
+#define JSON_WINDOW_RECT       "window_rect"
+#define JSON_WINDOW_HEIGHT_KEY "height"
+#define JSON_WINDOW_WIDTH_KEY  "width"
+
+
 
 /*
  * Function for safe reading from Advanced Programming in the Unix Environment 3rd Edition
@@ -88,7 +101,7 @@ int simple_atoi(const char *str)
         int res = 0;
         int i = 0;
 
-        for (i; str[i] >= '0' && str[i] <= '9'; ++i)
+        for (; str[i] >= '0' && str[i] <= '9'; ++i)
                 res = res * 10 + (str[i] - '0');
 
         return res;
@@ -206,6 +219,60 @@ int window_events_subscribe(int i3_fd_event)
         return 0;
 }
 
+void token_trim(int *start, int *end, const char *json_payload)
+{
+        while (*start < *end )
+        {
+                if (json_payload[*start] != ' ')
+                        break;
+                (*start)++;
+        }
+
+        while (*end > *start)
+        {
+                if (json_payload[*end - 1] != ' ')
+                        break;
+                (*end)--;
+        }
+}
+
+int json_get_val(char* val, const char *key, const char *json_payload, jsmntok_t *token_list, int tokens_read)
+{
+        int i;
+        int tok_start;
+        int tok_end;
+
+        for (i = 1; i < tokens_read; i++) {
+                if (token_list[i].type != JSMN_STRING)
+                        continue;
+
+                tok_start = token_list[i].start;
+                tok_end = token_list[i].end;
+                token_trim(&tok_start, &tok_end, json_payload);
+
+                int key_length = tok_end - tok_start;
+                int target_length = strlen(key);
+
+                if (key_length != target_length)
+                        continue;
+
+                if (strncasecmp(json_payload + tok_start, key, key_length) == 0) {
+                        int value_index = i + 1;
+                        int val_start = token_list[value_index].start;
+                        int val_end = token_list[value_index].end;
+
+                        token_trim(&val_start, &val_end, json_payload);
+                        int val_length = val_end - val_start;
+
+                        strncpy(val, json_payload + val_start, val_length);
+                        val[val_length] = '\0';
+
+                        return 1;
+                }
+        }
+        return 0;
+}
+
 /*
  * When it finds a window event, through the socket,
  * it searches to find if it was a focus event.
@@ -216,6 +283,12 @@ int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
 {
         int result = EVENT_ERROR;
 
+        jsmn_parser p;
+        jsmntok_t token_list[512];
+        jsmn_init(&p);
+        char json_val_buf[10];
+        int tokens_read;
+        int check;
         char *is_focus = NULL;
         char *is_new   = NULL;
         char *rect_ptr = NULL;
@@ -245,8 +318,16 @@ int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
 
         json_payload[event_header.size] = '\0';
 
-        is_focus = strstr(json_payload, "\"change\":\"focus\"");
-        is_new   = strstr(json_payload, "\"change\":\"new\"");
+
+        tokens_read = jsmn_parse(&p, json_payload, strlen(json_payload), token_list, sizeof(token_list)/sizeof(token_list[0]));
+        if (tokens_read <= 0)
+                goto out;
+
+        if (!json_get_val(json_val_buf, JSON_WINDOW_CHANGE_KEY, json_payload, token_list, tokens_read))
+                goto out;
+
+        is_focus = strstr(json_val_buf, JSON_WINDOW_CHANGE_VALUE_1);
+        is_new   = strstr(json_val_buf, JSON_WINDOW_CHANGE_VALUE_2);
 
         if (!is_focus && !is_new)
                 goto out;
@@ -266,6 +347,7 @@ int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
 out:
     return result;
 }
+
 
 /*
  * Sends command to i3 through the dedicated command socket
