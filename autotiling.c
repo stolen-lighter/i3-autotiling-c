@@ -371,8 +371,10 @@ int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
                 int j = i + 2;
 
                 while (j < tokens_read && token_list[j].start < rect_end) {
-                        if (token_list[j].type != JSMN_STRING)
+                        if (token_list[j].type != JSMN_STRING) {
+                                j++;
                                 continue;
+                        }
 
                         int p_start = token_list[j].start;
                         int p_end = token_list[j].end;
