@@ -221,6 +221,75 @@ int window_events_subscribe(int i3_fd_event)
 }
 
 /*
+ * Helpers
+ */
+static int tok_eq(const char *json, const jsmntok_t *tok, const char *s, size_t len)
+{
+	return tok->type == JSMN_STRING &&
+	       (size_t)(tok->end - tok->start) == len &&
+	       strncmp(json + tok->start, s, len) == 0;
+}
+
+static int is_valid_window_change(const char *json, const jsmntok_t *tokens, int val_idx, int tokens_read)
+{
+	if (val_idx >= tokens_read)
+		return 0;
+        int a = tok_eq(json, &tokens[val_idx], JSON_WINDOW_CHANGE_VALUE_1, 5);
+        int b = tok_eq(json, &tokens[val_idx], JSON_WINDOW_CHANGE_VALUE_2, 3);
+        int ret_val = a || b;
+	return ret_val;
+}
+
+static void parse_rect_dimensions(const char *json, const jsmntok_t *tokens, int *iter, int tokens_read, int *out_width, int *out_height)
+{
+	int obj_idx = *iter;
+
+	if (obj_idx >= tokens_read || tokens[obj_idx].type != JSMN_OBJECT)
+		return;
+
+	int pair_count = tokens[obj_idx].size;
+
+	for (int k = 0; k < pair_count; k++) {
+		int key_idx = *iter + 1;
+		int val_idx = *iter + 2;
+
+		if (val_idx >= tokens_read || tokens[val_idx].type != JSMN_PRIMITIVE)
+			break;
+
+		*iter = val_idx;
+
+		if (tok_eq(json, &tokens[key_idx], JSON_WINDOW_WIDTH_KEY, 5))
+			*out_width = simple_atoi(json + tokens[val_idx].start);
+		else if (tok_eq(json, &tokens[key_idx], JSON_WINDOW_HEIGHT_KEY, 6))
+			*out_height = simple_atoi(json + tokens[val_idx].start);
+	}
+}
+
+/*
+ * Advances *idx past the token at *idx, including all nested children
+ * if the token is an object or array.
+ */
+static void skip_token(const jsmntok_t *tokens, int *idx, int tokens_read)
+{
+	if (*idx >= tokens_read)
+		return;
+
+	int count = 1;
+	while (count > 0 && *idx < tokens_read) {
+		jsmntype_t t = tokens[*idx].type;
+		int size = tokens[*idx].size;
+
+		if (t == JSMN_OBJECT)
+			count += size * 2; /* each pair adds 1 key + 1 value */
+		else if (t == JSMN_ARRAY)
+			count += size;
+
+		(*idx)++;
+		count--;
+	}
+}
+
+/*
  * When it finds a window event through the socket,
  * it parses the JSON payload using jsmn to verify if it is a "focus" or "new" event.
  * If so, it extracts the width and height from the first "rect" object and returns
@@ -258,79 +327,58 @@ int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
 	jsmn_init(&p);
 	tokens_read = jsmn_parse(&p, json_payload, event_header.size,
 				 token_list, sizeof(token_list) / sizeof(token_list[0]));
-	if (tokens_read < 0)
+	if (tokens_read < 2 || token_list[0].type != JSMN_OBJECT)
 		goto out;
 
-	for (int iter = 1; iter < tokens_read; iter++) {
-		if (token_list[iter].type != JSMN_STRING)
-			continue;
+	/* Walk ONLY top-level pairs of the root event object */
+	int root_pairs = token_list[0].size;
+	int idx = 1;
 
-		int len = token_list[iter].end - token_list[iter].start;
-		const char *str = json_payload + token_list[iter].start;
+	for (int i = 0; i < root_pairs && idx + 1 < tokens_read; i++) {
+		int key_idx = idx;
+		int val_idx = idx + 1;
 
-		/* 1. Check "change" key for "focus" or "new" */
-		if (!valid_change && len == 6 &&
-		    strncmp(str, JSON_WINDOW_CHANGE_KEY, 6) == 0) {
-			iter++;
-			if (iter >= tokens_read || token_list[iter].type != JSMN_STRING)
-				continue;
+		if (tok_eq(json_payload, &token_list[key_idx], JSON_WINDOW_CHANGE_KEY, 6)) {
+			valid_change = is_valid_window_change(json_payload, token_list,
+							      val_idx, tokens_read);
+			idx = val_idx + 1;
+		} else if (tok_eq(json_payload, &token_list[key_idx], "container", 9) &&
+			   token_list[val_idx].type == JSMN_OBJECT) {
+			/* Walk ONLY direct pairs inside "container" */
+			int cont_pairs = token_list[val_idx].size;
+			int c_idx = val_idx + 1;
 
-			int vlen = token_list[iter].end - token_list[iter].start;
-			const char *vstr = json_payload + token_list[iter].start;
+			for (int j = 0; j < cont_pairs && c_idx + 1 < tokens_read; j++) {
+				int c_key = c_idx;
+				int c_val = c_idx + 1;
 
-			if ((vlen == 5 && strncmp(vstr, JSON_WINDOW_CHANGE_VALUE_1, 5) == 0) ||
-			    (vlen == 3 && strncmp(vstr, JSON_WINDOW_CHANGE_VALUE_2, 3) == 0))
-				valid_change = 1;
-
-			continue;
-		}
-
-		/* 2. Extract dimensions from the first "rect" object */
-		if (found_width == -1 && len == 4 &&
-		    strncmp(str, JSON_WINDOW_RECT, 4) == 0) {
-			iter++;
-			if (iter >= tokens_read || token_list[iter].type != JSMN_OBJECT)
-				continue;
-
-			int pair_count = token_list[iter].size;
-
-			for (int k = 0; k < pair_count; k++) {
-				int key_idx = iter + 1;
-				int val_idx = iter + 2;
-
-				if (val_idx >= tokens_read)
+				if (tok_eq(json_payload, &token_list[c_key], JSON_WINDOW_RECT, 4)) {
+					int rect_iter = c_val;
+					parse_rect_dimensions(json_payload, token_list,
+							      &rect_iter, tokens_read,
+							      &found_width, &found_height);
 					break;
-
-				/* Ensure value is a primitive (number) before advancing */
-				if (token_list[val_idx].type != JSMN_PRIMITIVE)
-					break;
-
-				iter = val_idx;
-
-				int klen = token_list[key_idx].end - token_list[key_idx].start;
-				const char *kstr = json_payload + token_list[key_idx].start;
-
-				if (klen == 5 && strncmp(kstr, JSON_WINDOW_WIDTH_KEY, 5) == 0)
-					found_width = simple_atoi(json_payload + token_list[val_idx].start);
-				else if (klen == 6 && strncmp(kstr, JSON_WINDOW_HEIGHT_KEY, 6) == 0)
-					found_height = simple_atoi(json_payload + token_list[val_idx].start);
+				}
+				c_idx = c_val;
+				skip_token(token_list, &c_idx, tokens_read);
 			}
+			idx = val_idx;
+			skip_token(token_list, &idx, tokens_read);
+		} else {
+			idx = val_idx;
+			skip_token(token_list, &idx, tokens_read);
 		}
+	}
 
-		/* Stop scanning tokens once all target fields are found */
-		if (valid_change && found_width >= 0 && found_height >= 0) {
-			*out_width = found_width;
-			*out_height = found_height;
-			result = EVENT_FOCUS;
-			break;
-		}
+	if (valid_change && found_width >= 0 && found_height >= 0) {
+		*out_width = found_width;
+		*out_height = found_height;
+		result = EVENT_FOCUS;
 	}
 
 out:
 	return result;
 }
-
-
 
 /*
  * Sends command to i3 through the dedicated command socket
