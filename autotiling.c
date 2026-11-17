@@ -10,12 +10,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <stdlib.h>
+#define JSMN_STATIC
 #include "jsmn.h"
 
 
 
 
-#define JSMN_STATIC
 /*
  * Error Message Definitions
  */
