@@ -2,7 +2,7 @@
 * [Definitions](#definitions)
     * [1. Error messages](#1-error-messages)
     * [2. i3 ipc return values](#2-i3-ipc-return-values)
-    * [3. Payloads](#3-payloads)
+    * [3. Payloads & JSON Keys](#3-payloads--json-keys)
 * [Functions](#functions)
     * [1. Function readn](#1-function-readn)
         * [Source code](#source-code)
@@ -22,7 +22,7 @@
     * [6. Function window_events_subscribe()](#6-function-window_events_subscribe)
         * [Source code](#source-code-4)
         * [Explanation](#explanation-5)
-    * [7. Function read_single_window_event()](#7-function-read_single_window_event)
+    * [7. Function read_single_window_event() and Helpers](#7-function-read_single_window_event-and-helpers)
     * [8. Function send_i3_split_command()](#8-function-send_i3_split_command)
         * [Source code](#source-code-5)
         * [Explanation](#explanation-6)
@@ -76,18 +76,19 @@ Usage snippet inside of `read_single_window_event()`:
 ```c
 int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
 {
-        int result = EVENT_ERROR;
-
-        char *is_focus = NULL;
-        char *is_new   = NULL;
-        char *rect_ptr = NULL;
-
-        struct i3_ipc_header event_header = {0};
-        char json_payload[4096] = {0};
+	int result = EVENT_ERROR;
+	int tokens_read;
+	int valid_change = 0;
+	int found_width = -1;
+	int found_height = -1;
+	jsmn_parser p;
+	jsmntok_t token_list[512];
+	struct i3_ipc_header event_header = {0};
+	char json_payload[4096] = {0};
         // Rest of the code
 }
 ```
-*In this instance the default return value of the function is set to EVENT_IGNORE*
+*In this instance the default return value of the function is set to `EVENT_ERROR`, and updated to `EVENT_IGNORE` once the IPC header is read.*
 Then in `main()`:
 ```c
 int main(void)
@@ -114,14 +115,22 @@ closing:
 // Code for closing sequence
 }
 ```
-Look in line number 13 of the sample above. It makes the logic easy to follow.
-### 3. Payloads
-As of now we have only one payload defined here.
+Look at the `if (event == EVENT_FOCUS)` check in the loop above—it makes the logic easy to follow.
+
+### 3. Payloads & JSON Keys
+Here we define the subscription payload sent to the i3 IPC along with the JSON keys and values we look for when parsing window events:
 ```c
 #define SUBSCRIBE_WINDOW_EVENT_PAYLOAD     "[\"window\"]"
 #define SUBSCRIBE_WINDOW_EVENT_PAYLOAD_LEN 10
+
+#define JSON_WINDOW_CHANGE_KEY     "change"
+#define JSON_WINDOW_CHANGE_VALUE_1 "focus"
+#define JSON_WINDOW_CHANGE_VALUE_2 "new"
+
+#define JSON_WINDOW_RECT       "rect"
+#define JSON_WINDOW_HEIGHT_KEY "height"
+#define JSON_WINDOW_WIDTH_KEY  "width"
 ```
-we use it when we need to send a payload to the i3 ipc.
 **Next up we check out our functions**
 
 ---
@@ -129,7 +138,7 @@ we use it when we need to send a payload to the i3 ipc.
 # Functions
 The goal of this part is to explain the technical details and why these choices were
 made. Of course nothing is set in stone, this is the first version and everything is
-subject to change if i have made a mistake.
+subject to change if I have made a mistake.
 
 These are our functions in the order we see them in the source code:
 ```c
@@ -139,6 +148,12 @@ const char *get_i3_socket_path(void) {}
 void flush_reply(int fd, uint32_t size) {}
 int connect_to_i3(const char *socket_path) {}
 int window_events_subscribe(int i3_fd_event) {}
+// These are helper functions
+static int tok_eq(const char *json, const jsmntok_t *tok, const char *s, size_t len) {}
+static int is_valid_window_change(const char *json, const jsmntok_t *tokens, int val_idx, int tokens_read) {}
+static void parse_rect_dimensions(const char *json, const jsmntok_t *tokens, int *iter, int tokens_read, int *out_width, int *out_height) {}
+static void skip_token(const jsmntok_t *tokens, int *idx, int tokens_read) {}
+// -------------------------
 int read_single_window_event(int i3_fd_event, int *out_width, int *out_height) {}
 int send_i3_split_command(int i3_cmd_fd, const char *split_x) {}
 ```
@@ -169,12 +184,12 @@ ssize_t readn(int fd, void *ptr, size_t n)
 }
 ```
 #### Explanation
-This is the easiest to explain, is it copied from the book:
+This is the easiest to explain, it is copied from the book:
 [Advanced Programming in the Unix Environment 3rd Edition](https://raw.githubusercontent.com/zwan074/technical-books/master/Advanced.Programming.in.the.UNIX.Environment.3rd.Edition.0321637739.pdf)
 Basically a wrapper for the `read()` function.
 It is chosen as a very safe and minimal way to ensure that we read everything that we
 specify, this is because if we miss anything our future reads will not be synchronized,
-and the program seizes to function.
+and the program ceases to function.
 For more details click on the link and read from the book.
 
 ---
@@ -186,19 +201,21 @@ int simple_atoi(const char *str)
         int res = 0;
         int i = 0;
 
-        for (i; str[i] >= '0' && str[i] <= '9'; ++i)
+        for (; str[i] >= '0' && str[i] <= '9'; ++i)
                 res = res * 10 + (str[i] - '0');
 
         return res;
 }
 ```
 #### Explanation
-`atoi()` means ASCII to integer.
-Inspired by the book:
-The C Programming Language - 2nd Edition, by Brian W.Kernighan and Dennis D.Ritchie
-The only changes are the name of the function the change:
-`char[]` -> `const char *str`
-and the we defined res instead of n.
+A minimal ASCII-to-integer converter inspired by:
+K&R's *The C Programming Language (2nd Edition)*.
+Because `jsmn` tokens point directly into the non-null-terminated
+slice of `json_payload`, stopping at the first non-digit character
+(`','` or `'}'`) allows direct parsing in place without copying substrings.
+The only changes are the name of the function, the signature change:
+`char[]` -> `const char *str`,
+and defining `res` instead of `n`.
 
 ---
 ### 3. Function get_i3_socket_path()
@@ -218,16 +235,15 @@ const char *get_i3_socket_path(void)
 }
 ```
 #### Explanation
-Almost fully transparent by the comments on the `autotiling.c` file.
+Almost fully transparent by the comments in `autotiling.c`.
 2 checks are happening.
 First we try to retrieve the environment variable `I3SOCK`. It should not
-fail if i3 is installed in the system. In the case the environment variable
+fail if i3 is running in the system. In the case the environment variable
 is not set we also check the file `/tmp/i3-ipc.sock`.
-If both fail then we assume that i3 is not installed on the system and return `NULL`.
-Else we return the file descriptor of the socket.
+If neither is found, it returns `NULL`.
 
-In our program we do this two times, to have one connection for reading window events,
-and the second time to have a channel for sending the split commands.
+In our program we connect twice using this path: once to listen for window events,
+and a second time to have a dedicated channel for sending the split commands.
 
 ---
 ### 4. Function flush_reply()
@@ -259,7 +275,7 @@ void flush_reply(int fd, uint32_t size)
 Many times we get a reply in the buffer that we want to ignore, it is important
 that we get rid of these messages, that's why this function exists.
 It uses a static buffer of sufficient size to read it and discard it.
-It goes without saying that it is a helper function
+It goes without saying that it is a helper function.
 
 ---
 ### 5. Function connect_to_i3()
@@ -298,11 +314,12 @@ out:
 #### Explanation
 This function is used after we have saved the path to the socket.
 Its goal is to return the file descriptor `socket_fd` so we can communicate with i3.
-As we saw in [get_i3_socket_path() function](#3-Function-get_i3_socket_path())
+As we saw in [get_i3_socket_path() function](#3-function-get_i3_socket_path),
 if we don't get the path we have `NULL` stored. If this function sees `NULL` in
-the `socket_path` it throws an error. Then we check for the return of the `socket()`
-command.
-**Buffer Safety:** Because we are avoiding dynamic memory allocation (`malloc()`)
+`socket_path` it prints an error. Then we check the return of the `socket()`
+call.
+
+**Buffer Safety:** Because we are avoiding dynamic memory allocation (`malloc()`),
 we copy the socket path into a fixed-size static struct (`addr.sun_path`).
 We use `strncpy()` with `sizeof(...) - 1` and manually add the `\0` terminator.
 This guarantees we will never have a buffer overflow, even if the environment
@@ -312,10 +329,10 @@ variable gives us an unexpectedly long path.
 This is a classic C pattern (heavily used in the Linux kernel) that keeps the code
 clean and prevents us from writing `return -1;` repeatedly. Also, when an error occurs,
 we use `write(STDOUT_FILENO, ...)` paired with the `ERR_` macros we defined in the 
-[Definitions section](#1-Error-Messages). This avoids the need to include `<stdio.h>`
+[Definitions section](#1-error-messages). This avoids the need to include `<stdio.h>`
 for `printf()`, strictly following our rule to minimize includes.
 
-If everything succeeds, the `connect()` system call links our empty socket to the
+If everything succeeds, the `connect()` system call links our socket to the
 i3 window manager, and we return the file descriptor so the rest of the program can
 start reading or writing.
 
@@ -346,7 +363,7 @@ int window_events_subscribe(int i3_fd_event)
 #### Explanation
 In order for the i3 ipc to transmit the correct messages for our program through the
 socket we need to request them by sending the correct message. We have it defined
-[in the definitions](#3-Payloads) for readability. We use the `i3_ipc_header` that we
+[in the definitions](#3-payloads--json-keys) for readability. We use the `i3_ipc_header` that we
 include from `<i3/ipc.h>`. We get it ready and then send it to the ipc and we flush the
 reply since it is really improbable that we can't subscribe at this point.
 
@@ -355,103 +372,112 @@ our connection broke.
 A return value of `0` means a successful subscription to the window events.
 
 ---
-### 7. Function read_single_window_event()
-Here the source code is not given all at once since it is a very big code block
-we will examine the code in snippets. The whole code is in the file `autotiling.c`.
+### 7. Function `read_single_window_event()` and Helpers
+#### Helper Overview
+To parse JSON with zero heap allocations, we use `jsmn` with a stack-allocated `jsmntok_t token_list[512]` array and four `static` helpers:
+* **`tok_eq()`**: Checks whether a `JSMN_STRING` token matches an expected key/value string and exact byte length.
+* **`is_valid_window_change()`**: Verifies that the `"change"` value is either `"focus"` or `"new"`.
+* **`parse_rect_dimensions()`**: Walks the direct key-value pairs inside `"rect"` and parses `"width"` and `"height"` using `simple_atoi()`.
+* **`skip_token()`**: Skips over any token and all of its nested children so we only inspect top-level keys of the root event and `"container"` object.
+
+#### Source code
 ```c
 int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
 {
-        int result = EVENT_ERROR;
+	int result = EVENT_ERROR;
+	int tokens_read;
+	int valid_change = 0;
+	int found_width = -1;
+	int found_height = -1;
+	jsmn_parser p;
+	jsmntok_t token_list[512];
+	struct i3_ipc_header event_header = {0};
+	char json_payload[4096] = {0};
 
-        char *is_focus = NULL;
-        char *is_new   = NULL;
-        char *rect_ptr = NULL;
+	ssize_t n = readn(i3_fd_event, &event_header, sizeof(struct i3_ipc_header));
+	if (n <= 0)
+		goto out;
 
-        struct i3_ipc_header event_header = {0};
-        char json_payload[4096] = {0};
+	result = EVENT_IGNORE;
+	if (event_header.type != I3_IPC_EVENT_WINDOW ||
+	    event_header.size >= sizeof(json_payload)) {
+		flush_reply(i3_fd_event, event_header.size);
+		goto out;
+	}
 
-        ssize_t n = readn(i3_fd_event, &event_header, sizeof(struct i3_ipc_header));
-```
-The first part are the variables the function needs and the initialization of
-the local variables.
-We need the file descriptor for the socket we use to read. the pointer to the width we
-will output and the pointer to the height we will output.
-Our initializations are a bit tricky.
-We start by thinking that the function will fail. So result is set to `EVENT_ERROR`.
-Then we have three `char` pointers, two that are checks and one that helps us navigate the
-json string we are expecting.
-The struct is self-explanatory as we saw in the previous function we use headers in the
-i3 ipc.
-We use a decently sized buffer to store the payload, and inside n we store the number
-of bytes read while storing the header in our struct.
-The next part are the conditions for the program to exit without parsing the payload.
-```c
-    if (n <= 0)
-            goto out;
+	n = readn(i3_fd_event, json_payload, event_header.size);
+	if (n <= 0)
+		goto out;
 
-    result = EVENT_IGNORE;
-    if (event_header.type != I3_IPC_EVENT_WINDOW) {
-            flush_reply(i3_fd_event, event_header.size);
-            goto out;
-    }
+	json_payload[event_header.size] = '\0';
 
-    if (event_header.size >= sizeof(json_payload)) {
-            flush_reply(i3_fd_event, event_header.size);
-            goto out;
-    }
+	jsmn_init(&p);
+	tokens_read = jsmn_parse(&p, json_payload, event_header.size,
+				 token_list, sizeof(token_list) / sizeof(token_list[0]));
+	if (tokens_read < 2 || token_list[0].type != JSMN_OBJECT)
+		goto out;
 
-    n = readn(i3_fd_event, json_payload, event_header.size);
-    if (n <= 0)
-            goto out;
-```
-Here by checking if `n <= 0`, we make sure that we read the header without errors.
-Next we set result to `EVENT_IGNORE`, since we read without errors whatever happens next
-is either the payload is relevant or not.
-The check after that is a bit unnecessary but is there for extra safety.
-The third if statement seems weird, if the size of the payload is bigger or equal to our
-buffer we ignore the event. For reference the readme file in this repo is 3.6Kb, our
-buffer has a 4Kb capacity, so such a big payload is very improbable and would cause an
-overflow.(The reason we flush even if the payload is 4Kb is because we need to add the
-null terminator too).
-Because n stores the return value of a `readn()` call we reuse it this time for reading
-the payload.
-```c
-    json_payload[event_header.size] = '\0';
+	/* Walk ONLY top-level pairs of the root event object */
+	int root_pairs = token_list[0].size;
+	int idx = 1;
 
-    is_focus = strstr(json_payload, "\"change\":\"focus\"");
-    is_new   = strstr(json_payload, "\"change\":\"new\"");
+	for (int i = 0; i < root_pairs && idx + 1 < tokens_read; i++) {
+		int key_idx = idx;
+		int val_idx = idx + 1;
 
-    if (!is_focus && !is_new)
-            goto out;
-```
-In this part is the first check to see if the payload is relevant.
-The only cases where the height, and the width of a window changes is if
-we focus on a new window or if we focus on an existing window, that's what we
-are looking for here.
-Now it's time to extract the height and the width.
-```c
-    result = EVENT_FOCUS;
-    rect_ptr = strstr(json_payload, "\"rect\":{");
-    if (rect_ptr != NULL) {
-            char *width_ptr = strstr(rect_ptr, "\"width\":");
-            char *height_ptr = strstr(rect_ptr, "\"height\":");
+		if (tok_eq(json_payload, &token_list[key_idx], JSON_WINDOW_CHANGE_KEY, 6)) {
+			valid_change = is_valid_window_change(json_payload, token_list,
+							      val_idx, tokens_read);
+			idx = val_idx + 1;
+		} else if (tok_eq(json_payload, &token_list[key_idx], "container", 9) &&
+			   token_list[val_idx].type == JSMN_OBJECT) {
+			/* Walk ONLY direct pairs inside "container" */
+			int cont_pairs = token_list[val_idx].size;
+			int c_idx = val_idx + 1;
 
-            if (width_ptr && height_ptr) {
-                    *out_width = simple_atoi(width_ptr + 8);
-                    *out_height = simple_atoi(height_ptr + 9);
-            }
-    }
+			for (int j = 0; j < cont_pairs && c_idx + 1 < tokens_read; j++) {
+				int c_key = c_idx;
+				int c_val = c_idx + 1;
+
+				if (tok_eq(json_payload, &token_list[c_key], JSON_WINDOW_RECT, 4)) {
+					int rect_iter = c_val;
+					parse_rect_dimensions(json_payload, token_list,
+							      &rect_iter, tokens_read,
+							      &found_width, &found_height);
+					break;
+				}
+				c_idx = c_val;
+				skip_token(token_list, &c_idx, tokens_read);
+			}
+			idx = val_idx;
+			skip_token(token_list, &idx, tokens_read);
+		} else {
+			idx = val_idx;
+			skip_token(token_list, &idx, tokens_read);
+		}
+	}
+
+	if (valid_change && found_width >= 0 && found_height >= 0) {
+		*out_width = found_width;
+		*out_height = found_height;
+		result = EVENT_FOCUS;
+	}
 
 out:
-    return result;
+	return result;
+}
 ```
-The correct dimensions are inside `rect`, so we first point the `rect_ptr` to `rect`,
-if it is not found we exit, if found then from there we search for the first instance of
-`height` and `width`, then if both are not null with the correct offset we extract their
-values.
+#### Explanation
+1. **Header & Bounds Validation:** Reads `i3_ipc_header`. If the message is not `I3_IPC_EVENT_WINDOW` or its payload is greater than or equal to 4096 bytes (leaving room for a `\0` terminator), it flushes the payload and returns `EVENT_IGNORE`.
+2. **Tokenization:** Parses `json_payload` into `token_list` using `jsmn_parse()`.
+3. **Targeted Tree Walk:**
+   * Walks top-level key-value pairs of the root JSON object.
+   * Checks `"change"` to verify the event is `"focus"` or `"new"`.
+   * Enters `"container"` and walks only its direct keys to locate `"rect"`, extracting `width` and `height` while skipping unrelated subtrees (`nodes`, `floating_nodes`, `window_properties`, etc.) via `skip_token()`.
+4. **Validation:** Only sets `*out_width`, `*out_height`, and returns `EVENT_FOCUS` if both a valid `"change"` event and valid non-negative dimensions were found.
 
 ---
-### 8. Function send_i3_split_command()
+### 8. Function `send_i3_split_command()`
 #### Source code
 ```c
 int send_i3_split_command(int i3_cmd_fd, const char *split_x)
@@ -475,13 +501,10 @@ int send_i3_split_command(int i3_cmd_fd, const char *split_x)
 }
 ```
 #### Explanation
-In this function in the same way, we get a header ready to let i3 know that
-the incoming message is a command. Then we have a choice between sending
-a split horizontally or a split vertically command. After that we clean up
-by flushing the reply.
+Packages either `"split h"` or `"split v"` into an `I3_IPC_MESSAGE_TYPE_COMMAND` IPC message, sends it over the dedicated `i3_cmd_fd` socket, and flushes i3's command response.
 
 ---
-### 9. Function handle_signal()
+### 9. Function `handle_signal()`
 #### Source code
 ```c
 volatile sig_atomic_t keep_running = 1;
@@ -492,45 +515,18 @@ void handle_signal(int sig)
 }
 ```
 #### Explanation
-This is our signal handler, designed to catch termination signals
-(like `SIGINT` when you press Ctrl+C, or `SIGTERM` from the system) so the program
-can shut down gracefully instead of just crashing.
-The variable `keep_running` is what keeps our main loop alive. We use `sig_atomic_t`
-to guarantee that reading and writing this variable happens in a single,
-uninterruptible instruction. We add `volatile` to force the compiler to read it directly
-from memory every single time the `while` loop checks it, preventing aggressive
-optimization from caching it in a CPU register.
-
-Because all signal handlers require an integer parameter (the signal number),
-but we don't actually need to know *which* signal we received to shut down, we
-cast it to `void`. This is a trick to silence the compiler's "unused parameter"
-warning, keeping our compilation clean without disabling safety flags.
-Inside a signal handler, you are severely restricted in what functions you can safely
-call (most standard library functions are not "async-signal-safe").
-By doing nothing but flipping a single integer flag, we guarantee the handler will
-never cause a deadlock or crash. It simply tells the `main()` function to break the
-loop and handle the socket cleanup securely in the `closing:` block.
+Catches `SIGINT` and `SIGTERM` so the daemon shuts down cleanly:
+* `volatile sig_atomic_t` ensures atomic reads/writes across signal interrupts and prevents the compiler from caching `keep_running` in a register inside the `while` loop.
+* `(void)sig;` silences unused-parameter compiler warnings.
+* Only sets the flag (strictly async-signal-safe), letting `main()` break out of the loop and close sockets cleanly.
 
 ---
-### 10. Function main()
+### 10. Function `main()`
 #### Source code
-*Look inside the file and see the code, all the functions used are showcased*
+*Look inside `autotiling.c` to see how all of the functions above fit together.*
 #### Explanation
-The `main` function acts as the orchestrator, divided into four clear phases:
-*1. Two-Socket Architecture*
-We connect to i3 twice to keep the program single-threaded without needing
-complex async I/O. `i3_fd_event` permanently blocks to listen for window events,
-while `i3_cmd_fd` is a dedicated channel to send commands instantly.
-*2. Signal Registration*
-We use POSIX `sigaction()` to catch `SIGINT` and `SIGTERM`.
-We use `memset()` to zero out the struct, preventing garbage memory from
-corrupting our flags.
-*3. The Autotiling Loop*
-The `while` loop blocks until i3 reports an event. When a new window gets focus,
-the core autotiling math applies: if the window is wider than it is tall
-(`width > height`), we split horizontally (`split h`). Otherwise, we split vertically
-(`split v`).
-*4. Cleanup*
-The `closing:` label provides a single, safe exit point. Whether stopped by a user
-signal or a broken socket, the program always funnels here to close file descriptors
-and return resources to the kernel.
+`main()` orchestrates the daemon in four phases:
+1. **Two-Socket Architecture:** Opens two separate IPC connections (`i3_fd_event` and `i3_cmd_fd`). This keeps the program single-threaded without `select()`/`poll()`: `i3_fd_event` blocks waiting for window events while `i3_cmd_fd` sends commands synchronously without interleaving event packets and command replies.
+2. **Signal Registration:** Uses `sigaction()` (with `sa_flags = 0` so blocking `read()` calls are interrupted with `EINTR` rather than restarted automatically) to handle `SIGINT` and `SIGTERM`.
+3. **Autotiling Event Loop:** Blocks on `read_single_window_event()`. Whenever a window is focused or created (`EVENT_FOCUS`), if `width > height` it sends `"split h"`; otherwise, it sends `"split v"`.
+4. **Cleanup (`closing:` label):** Closes both file descriptors and prints the exit notice before returning `0`.
