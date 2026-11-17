@@ -15,6 +15,7 @@
 
 
 
+#define JSMN_STATIC
 /*
  * Error Message Definitions
  */
@@ -59,7 +60,7 @@
 #define JSON_WINDOW_CHANGE_VALUE_1 "focus"
 #define JSON_WINDOW_CHANGE_VALUE_2 "new"
 
-#define JSON_WINDOW_RECT       "window_rect"
+#define JSON_WINDOW_RECT       "rect"
 #define JSON_WINDOW_HEIGHT_KEY "height"
 #define JSON_WINDOW_WIDTH_KEY  "width"
 
@@ -219,183 +220,116 @@ int window_events_subscribe(int i3_fd_event)
         return 0;
 }
 
-void token_trim(int *start, int *end, const char *json_payload)
-{
-        while (*start < *end )
-        {
-                if (json_payload[*start] != ' ')
-                        break;
-                (*start)++;
-        }
-
-        while (*end > *start)
-        {
-                if (json_payload[*end - 1] != ' ')
-                        break;
-                (*end)--;
-        }
-}
-
-int json_get_val(char* val, const char *key, const char *json_payload, jsmntok_t *token_list, int tokens_read)
-{
-        int i;
-        int tok_start;
-        int tok_end;
-
-        for (i = 1; i < tokens_read; i++) {
-                if (token_list[i].type != JSMN_STRING)
-                        continue;
-
-                tok_start = token_list[i].start;
-                tok_end = token_list[i].end;
-                token_trim(&tok_start, &tok_end, json_payload);
-
-                int key_length = tok_end - tok_start;
-                int target_length = strlen(key);
-
-                if (key_length != target_length)
-                        continue;
-
-                if (strncasecmp(json_payload + tok_start, key, key_length) != 0)
-                        continue;
-
-                int value_index = i + 1;
-                int val_start = token_list[value_index].start;
-                int val_end = token_list[value_index].end;
-
-                token_trim(&val_start, &val_end, json_payload);
-                int val_length = val_end - val_start;
-
-                strncpy(val, json_payload + val_start, val_length);
-                val[val_length] = '\0';
-
-                return 1;
-        }
-        return 0;
-}
-
 /*
- * When it finds a window event, through the socket,
- * it searches to find if it was a focus event.
- * If it was then it returns the width and height of the focused window,
- * else it ignores in both cases if conditions are not met and return EVENT_IGNORE
+ * When it finds a window event through the socket,
+ * it parses the JSON payload using jsmn to verify if it is a "focus" or "new" event.
+ * If so, it extracts the width and height from the first "rect" object and returns
+ * EVENT_FOCUS; otherwise it ignores the event and returns EVENT_IGNORE.
  */
 int read_single_window_event(int i3_fd_event, int *out_width, int *out_height)
 {
-        int result = EVENT_ERROR;
+	int result = EVENT_ERROR;
+	int tokens_read;
+	int valid_change = 0;
+	int found_width = -1;
+	int found_height = -1;
+	jsmn_parser p;
+	jsmntok_t token_list[512];
+	struct i3_ipc_header event_header = {0};
+	char json_payload[4096] = {0};
 
-        jsmn_parser p;
-        jsmntok_t token_list[512];
-        jsmn_init(&p);
-        char json_val_buf[10];
-        int tokens_read;
-        int check;
-        char *is_focus = NULL;
-        char *is_new   = NULL;
-        char *rect_ptr = NULL;
+	ssize_t n = readn(i3_fd_event, &event_header, sizeof(struct i3_ipc_header));
+	if (n <= 0)
+		goto out;
 
-        struct i3_ipc_header event_header = {0};
-        char json_payload[4096] = {0};
+	result = EVENT_IGNORE;
+	if (event_header.type != I3_IPC_EVENT_WINDOW ||
+	    event_header.size >= sizeof(json_payload)) {
+		flush_reply(i3_fd_event, event_header.size);
+		goto out;
+	}
 
-        ssize_t n = readn(i3_fd_event, &event_header, sizeof(struct i3_ipc_header));
+	n = readn(i3_fd_event, json_payload, event_header.size);
+	if (n <= 0)
+		goto out;
 
-        if (n <= 0)
-                goto out;
+	json_payload[event_header.size] = '\0';
 
-        result = EVENT_IGNORE;
-        if (event_header.type != I3_IPC_EVENT_WINDOW) {
-                flush_reply(i3_fd_event, event_header.size);
-                goto out;
-        }
+	jsmn_init(&p);
+	tokens_read = jsmn_parse(&p, json_payload, event_header.size,
+				 token_list, sizeof(token_list) / sizeof(token_list[0]));
+	if (tokens_read < 0)
+		goto out;
 
-        if (event_header.size >= sizeof(json_payload)) {
-                flush_reply(i3_fd_event, event_header.size);
-                goto out;
-        }
+	for (int iter = 1; iter < tokens_read; iter++) {
+		if (token_list[iter].type != JSMN_STRING)
+			continue;
 
-        n = readn(i3_fd_event, json_payload, event_header.size);
-        if (n <= 0)
-                goto out;
+		int len = token_list[iter].end - token_list[iter].start;
+		const char *str = json_payload + token_list[iter].start;
 
-        json_payload[event_header.size] = '\0';
+		/* 1. Check "change" key for "focus" or "new" */
+		if (!valid_change && len == 6 &&
+		    strncmp(str, JSON_WINDOW_CHANGE_KEY, 6) == 0) {
+			iter++;
+			if (iter >= tokens_read || token_list[iter].type != JSMN_STRING)
+				continue;
 
+			int vlen = token_list[iter].end - token_list[iter].start;
+			const char *vstr = json_payload + token_list[iter].start;
 
-        tokens_read = jsmn_parse(&p, json_payload, strlen(json_payload), token_list, sizeof(token_list)/sizeof(token_list[0]));
-        if (tokens_read <= 0)
-                goto out;
+			if ((vlen == 5 && strncmp(vstr, JSON_WINDOW_CHANGE_VALUE_1, 5) == 0) ||
+			    (vlen == 3 && strncmp(vstr, JSON_WINDOW_CHANGE_VALUE_2, 3) == 0))
+				valid_change = 1;
 
-        if (!json_get_val(json_val_buf, JSON_WINDOW_CHANGE_KEY, json_payload, token_list, tokens_read))
-                goto out;
+			continue;
+		}
 
-        is_focus = strstr(json_val_buf, JSON_WINDOW_CHANGE_VALUE_1);
-        is_new   = strstr(json_val_buf, JSON_WINDOW_CHANGE_VALUE_2);
+		/* 2. Extract dimensions from the first "rect" object */
+		if (found_width == -1 && len == 4 &&
+		    strncmp(str, JSON_WINDOW_RECT, 4) == 0) {
+			iter++;
+			if (iter >= tokens_read || token_list[iter].type != JSMN_OBJECT)
+				continue;
 
-        if (!is_focus && !is_new)
-                goto out;
-/*
-        result = EVENT_FOCUS;
-        rect_ptr = strstr(json_payload, "\"rect\":{");
-        if (rect_ptr != NULL) {
-                char *width_ptr = strstr(rect_ptr, "\"width\":");
-                char *height_ptr = strstr(rect_ptr, "\"height\":");
+			int pair_count = token_list[iter].size;
 
-                if (width_ptr && height_ptr) {
-                        *out_width = simple_atoi(width_ptr + 8);
-                        *out_height = simple_atoi(height_ptr + 9);
-                }
-        }
-*/
-        if (!is_focus && !is_new)
-                goto out;
+			for (int k = 0; k < pair_count; k++) {
+				int key_idx = iter + 1;
+				int val_idx = iter + 2;
 
-        result = EVENT_FOCUS;
+				if (val_idx >= tokens_read)
+					break;
 
-        for (int i = 1; i < tokens_read; i++) {
-                if (token_list[i].type != JSMN_STRING)
-                        continue;
-                int tok_start = token_list[i].start;
-                int tok_end = token_list[i].end;
-                int key_len = tok_end - tok_start;
-                token_trim(&tok_start, &tok_end, json_payload);
+				/* Ensure value is a primitive (number) before advancing */
+				if (token_list[val_idx].type != JSMN_PRIMITIVE)
+					break;
 
-                if (key_len != 4)
-                        continue;
+				iter = val_idx;
 
-                if (strncasecmp(json_payload + tok_start, "rect", 4) != 0)
-                        continue;
+				int klen = token_list[key_idx].end - token_list[key_idx].start;
+				const char *kstr = json_payload + token_list[key_idx].start;
 
-                if (token_list[i + 1].type != JSMN_OBJECT)
-                        continue;
+				if (klen == 5 && strncmp(kstr, JSON_WINDOW_WIDTH_KEY, 5) == 0)
+					found_width = simple_atoi(json_payload + token_list[val_idx].start);
+				else if (klen == 6 && strncmp(kstr, JSON_WINDOW_HEIGHT_KEY, 6) == 0)
+					found_height = simple_atoi(json_payload + token_list[val_idx].start);
+			}
+		}
 
-                int rect_end = token_list[i + 1].end;
-                int j = i + 2;
-
-                while (j < tokens_read && token_list[j].start < rect_end) {
-                        if (token_list[j].type != JSMN_STRING) {
-                                j++;
-                                continue;
-                        }
-
-                        int p_start = token_list[j].start;
-                        int p_end = token_list[j].end;
-                        int p_len = p_end - p_start;
-
-                        if (p_len == 5 && strncasecmp(json_payload + p_start, "width", 5) == 0) {
-                                *out_width = simple_atoi(json_payload + token_list[j + 1].start);
-                                j++;
-                        } else if (p_len == 6 && strncasecmp(json_payload + p_start, "height", 6) == 0) {
-                                *out_height = simple_atoi(json_payload + token_list[j + 1].start);
-                                j++;
-                        }
-
-                        j++;
-                }
-                break;
-        }
+		/* Stop scanning tokens once all target fields are found */
+		if (valid_change && found_width >= 0 && found_height >= 0) {
+			*out_width = found_width;
+			*out_height = found_height;
+			result = EVENT_FOCUS;
+			break;
+		}
+	}
 
 out:
-        return result;
+	return result;
 }
+
 
 
 /*
